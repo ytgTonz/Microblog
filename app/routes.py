@@ -1,29 +1,48 @@
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
-from flask import render_template, flash, redirect, url_for, request
+from flask import render_template, flash, redirect, url_for, request 
 from flask_login import login_user, logout_user, current_user, login_required
 import sqlalchemy as sa
 from app import app, db
 from app.forms import LoginForm, RegistrationForm, EditProfileForm, EmptyForm
-from app.models import User
+from app.forms import PostForm
+from app.models import User, Post
+import requests
 
-
-@app.route('/')
-@app.route('/index')
+@app.route('/', methods=['GET', 'POST'])
+@app.route('/index', methods=['GET', 'POST'])
 @login_required
 def index():
-    posts = [
-        {
-            'author': {'username': 'John'},
-            'body': 'Beautiful day in Portland!'
-        },
-        {
-            'author': {'username': 'Susan'},
-            'body': 'The Avengers movie was so cool!'
-        }
-    ]
-    return render_template('index.html', title='Home', posts=posts)
+    form = PostForm()
+    if form.validate_on_submit():
+        post = Post(body=form.post.data, author=current_user)
+        db.session.add(post)
+        db.session.commit()
+        flash('Your post is  live!')
+        return redirect(url_for('index'))
+    page = request.args.get('page', 1, type=int)
+    posts = db.paginate(current_user.following_posts(),
+                         page=page, 
+                         per_page=app.config['POSTS_PER_PAGE'],
+                         error_out=False)
+    next_url = url_for('index', page=posts.next_num) \
+        if posts.has_next else None
+    prev_url = url_for('index', page=posts.prev_num) \
+        if posts.has_prev else None
+    return render_template('index.html', title='Home Page', form=form, posts=posts.items, next_url=next_url, prev_url=prev_url)
 
+@app.route('/explore')
+@login_required
+def explore():
+    page = request.args.get('page', 1, type=int)
+    query = sa.select(Post).order_by(Post.timestamp.desc())
+    posts = db.paginate(query, page=page, per_page=app.config['POSTS_PER_PAGE'], error_out=False)
+    next_url = url_for('explore', page=posts.next_num) \
+        if posts.has_next else None
+    prev_url = url_for('explore', page=posts.prev_num) \
+        if posts.has_prev else None
+    return render_template("index.html", title='Explore', posts=posts.items,
+                           next_url=next_url, prev_url=prev_url)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -69,12 +88,15 @@ def register():
 @login_required
 def user(username):
     user = db.first_or_404(sa.select(User).where(User.username == username))
-    posts = [
-        {'author': user, 'body': 'Test post #1'},
-        {'author': user, 'body':'Test post #2'}     
-    ]
+    page = request.args.get('page', 1, type=int)
+    query = user.posts.select().order_by(Post.timestamp.desc())
+    posts = db.paginate(query, page=page, per_page=app.config['POSTS_PER_PAGE'], error_out=False)
+    next_url = url_for('user', username=user.username, page=posts.next_num) \
+        if posts.has_next else None
+    prev_url = url_for('user', username=user.username, page=posts.prev_num) \
+        if posts.has_prev else None
     form = EmptyForm()
-    return render_template('user.html', user=user, posts=posts)
+    return render_template('user.html', user=user, posts=posts.items, next_url=next_url, prev_url=prev_url, form=form)
 
 @app.before_request
 def before_request():
